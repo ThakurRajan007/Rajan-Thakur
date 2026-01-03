@@ -1,0 +1,7 @@
+{
+  "name": "Copy of FuturePrep AI",
+  "description": "The ultimate futuristic career accelerator. Simulate high-stakes interviews with real-time AI avatars across multiple tech domains.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
