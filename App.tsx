@@ -1,12 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage } from '@google/genai';
-import { ViewMode, SessionMode, AvatarGender, User } from './types';
-import { searchTechnologies } from './services/geminiService';
+import { ViewMode, SessionMode, AvatarGender } from './types.ts';
+import { searchTechnologies } from './services/geminiService.ts';
 
 const App: React.FC = () => {
   const [view, setView] = useState<ViewMode>('dashboard');
-  const [sessionMode, setSessionMode] = useState<SessionMode>('interview');
+  const [sessionMode, setSessionMode] = useState<SessionMode>('prep'); 
   const [avatarGender, setAvatarGender] = useState<AvatarGender>('male');
   const [languagePreference, setLanguagePreference] = useState<'english' | 'hinglish'>('hinglish');
   const [isLive, setIsLive] = useState(false);
@@ -15,9 +15,10 @@ const App: React.FC = () => {
   const [selectedTechs, setSelectedTechs] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   
-  // Persistence states
   const [conversationHistory, setConversationHistory] = useState<string[]>([]);
   const [masteryStage, setMasteryStage] = useState(1);
+  const [questionCount, setQuestionCount] = useState(0);
+  const [mistakeLog, setMistakeLog] = useState<string[]>([]);
   const [lastActiveTime, setLastActiveTime] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -29,64 +30,82 @@ const App: React.FC = () => {
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
 
-  // Persistence logic
   useEffect(() => {
-    const savedTechs = localStorage.getItem('fp_selected_techs');
-    const savedHistory = localStorage.getItem('fp_conv_history');
-    const savedStage = localStorage.getItem('fp_mastery_stage');
-    const savedLang = localStorage.getItem('fp_lang');
-    const savedTime = localStorage.getItem('fp_last_active');
+    try {
+      const savedTechs = localStorage.getItem('fp_techs');
+      const savedHistory = localStorage.getItem('fp_history');
+      const savedStage = localStorage.getItem('fp_stage');
+      const savedQCount = localStorage.getItem('fp_qcount');
+      const savedMistakes = localStorage.getItem('fp_mistakes');
+      const savedLang = localStorage.getItem('fp_lang');
+      const savedTime = localStorage.getItem('fp_time');
+      const savedMode = localStorage.getItem('fp_mode');
 
-    if (savedTechs) setSelectedTechs(JSON.parse(savedTechs));
-    if (savedHistory) setConversationHistory(JSON.parse(savedHistory));
-    if (savedStage) setMasteryStage(parseInt(savedStage, 10));
-    if (savedLang) setLanguagePreference(savedLang as 'english' | 'hinglish');
-    if (savedTime) setLastActiveTime(savedTime);
+      if (savedTechs) setSelectedTechs(JSON.parse(savedTechs));
+      if (savedHistory) setConversationHistory(JSON.parse(savedHistory));
+      if (savedStage) setMasteryStage(parseInt(savedStage, 10));
+      if (savedQCount) setQuestionCount(parseInt(savedQCount, 10));
+      if (savedMistakes) setMistakeLog(JSON.parse(savedMistakes));
+      if (savedLang) setLanguagePreference(savedLang as 'english' | 'hinglish');
+      if (savedTime) setLastActiveTime(savedTime);
+      if (savedMode) setSessionMode(savedMode as SessionMode);
+    } catch (e) {
+      console.error("Failed to load persistence data", e);
+    }
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('fp_selected_techs', JSON.stringify(selectedTechs));
-    localStorage.setItem('fp_conv_history', JSON.stringify(conversationHistory));
-    localStorage.setItem('fp_mastery_stage', masteryStage.toString());
+    localStorage.setItem('fp_techs', JSON.stringify(selectedTechs));
+    localStorage.setItem('fp_history', JSON.stringify(conversationHistory));
+    localStorage.setItem('fp_stage', masteryStage.toString());
+    localStorage.setItem('fp_qcount', questionCount.toString());
+    localStorage.setItem('fp_mistakes', JSON.stringify(mistakeLog));
     localStorage.setItem('fp_lang', languagePreference);
+    localStorage.setItem('fp_mode', sessionMode);
     if (isLive) {
       const now = new Date().toLocaleTimeString();
-      localStorage.setItem('fp_last_active', now);
+      localStorage.setItem('fp_time', now);
       setLastActiveTime(now);
     }
-  }, [selectedTechs, conversationHistory, masteryStage, languagePreference, isLive]);
+  }, [selectedTechs, conversationHistory, masteryStage, questionCount, mistakeLog, languagePreference, sessionMode, isLive]);
 
   useEffect(() => {
-    const delayDebounceFn = setTimeout(async () => {
-      if (searchTerm.length >= 2) {
-        setIsSearching(true);
-        const results = await searchTechnologies(searchTerm);
-        setSuggestions(results.filter(t => !selectedTechs.includes(t)));
-        setIsSearching(false);
-      } else {
+    const fetchSuggestions = async () => {
+      if (searchTerm.length < 2) {
         setSuggestions([]);
+        return;
       }
-    }, 300);
-    return () => clearTimeout(delayDebounceFn);
-  }, [searchTerm, selectedTechs]);
+      setIsSearching(true);
+      try {
+        const results = await searchTechnologies(searchTerm);
+        setSuggestions(results);
+      } catch (error) {
+        console.error("Technology search failed", error);
+      } finally {
+        setIsSearching(false);
+      }
+    };
+
+    const timer = setTimeout(fetchSuggestions, 500);
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
 
   const toggleTech = (tech: string) => {
-    if (selectedTechs.includes(tech)) {
-      setSelectedTechs(selectedTechs.filter(t => t !== tech));
-    } else {
-      setSelectedTechs([...selectedTechs, tech]);
-      setSearchTerm('');
-      setSuggestions([]);
-    }
+    setSelectedTechs(prev => 
+      prev.includes(tech) ? prev.filter(t => t !== tech) : [...prev, tech]
+    );
+    setSearchTerm('');
+    setSuggestions([]);
   };
 
-  const clearSessionData = () => {
+  const clearAllData = () => {
+    localStorage.clear();
     setConversationHistory([]);
     setMasteryStage(1);
-    setLastActiveTime(null);
-    localStorage.removeItem('fp_conv_history');
-    localStorage.removeItem('fp_mastery_stage');
-    localStorage.removeItem('fp_last_active');
+    setQuestionCount(0);
+    setMistakeLog([]);
+    setSelectedTechs([]);
+    setView('dashboard');
   };
 
   const startLiveSession = async (isResuming = false) => {
@@ -106,7 +125,7 @@ const App: React.FC = () => {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     
     const sessionPromise = ai.live.connect({
-      model: 'gemini-2.5-flash-native-audio-preview-09-2025',
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       callbacks: {
         onopen: () => {
           const source = inputCtx.createMediaStreamSource(stream);
@@ -124,17 +143,20 @@ const App: React.FC = () => {
           source.connect(processor);
           processor.connect(inputCtx.destination);
           
-          const techList = selectedTechs.join(', ');
-          const contextPrompt = isResuming && conversationHistory.length > 0
-            ? `Resuming session. Previously we discussed: ${conversationHistory.slice(-4).join(' | ')}. We are at stage ${masteryStage}. Do not repeat the same questions.`
-            : `Initial connection. Target stack: ${techList}.`;
-
-          const langInstruction = languagePreference === 'hinglish' 
-            ? "Speak in Hinglish (a mix of Hindi and English). Use Hindi for explanations and support, but keep technical terms like 'Architecture' or 'Deployment' in English."
-            : "Speak strictly in professional English.";
-
-          const initialMessage = `${contextPrompt} ${langInstruction} Let's ${isResuming ? 'continue' : 'begin'} the session.`;
-          sessionPromise.then(s => s.sendRealtimeInput({ text: initialMessage }));
+          const prompt = `
+            SYSTEM_PROTOCOL: ${sessionMode.toUpperCase()}
+            RESUMING: ${isResuming}
+            STAGE: ${masteryStage}
+            CURRENT_PROGRESS: ${questionCount} / 40 Core Milestones.
+            TECH_STACK: ${selectedTechs.join(', ')}
+            
+            DIRECTIONS:
+            1. Use [Q] marker ONLY for new, core milestones.
+            2. MENTOR MODE: If User says "I don't know" or struggles, stop the test. Provide a "Masterclass" deep-dive explanation.
+            3. Use HINGLISH: Technical concepts in English, conversational flow in Hindi.
+            4. Do not increment the milestone count while teaching. Only use [Q] when you're ready to test again.
+          `;
+          sessionPromise.then(s => s.sendRealtimeInput({ text: prompt }));
         },
         onmessage: async (msg: LiveServerMessage) => {
           if (msg.serverContent?.outputTranscription) {
@@ -144,13 +166,24 @@ const App: React.FC = () => {
           }
 
           if (msg.serverContent?.turnComplete) {
-            const input = currentInputTranscription.current;
             const output = currentOutputTranscription.current;
-            if (input || output) {
-              setConversationHistory(prev => [...prev, `User: ${input}`, `AI: ${output}`].slice(-20));
-              // Detect stage clearing from text if possible
-              if (output.toLowerCase().includes("stage clear") || output.toLowerCase().includes("stage complete")) {
+            const input = currentInputTranscription.current;
+            
+            if (output || input) {
+              const cleanedOutput = output.replace(/\[Q\]/g, '').trim();
+              setConversationHistory(prev => [...prev, `Q: ${cleanedOutput}`, `A: ${input}`].slice(-40));
+              
+              if (output.includes('[Q]')) {
+                setQuestionCount(c => c + 1);
+              }
+
+              if (output.toLowerCase().includes("galat") || output.toLowerCase().includes("wrong")) {
+                setMistakeLog(prev => [...prev, `Logic Error at Milestone ${questionCount}`].slice(-20));
+              }
+
+              if (questionCount >= 40 && (output.toLowerCase().includes("stage clear") || output.toLowerCase().includes("pass"))) {
                 setMasteryStage(s => Math.min(s + 1, 4));
+                setQuestionCount(0);
               }
             }
             currentInputTranscription.current = '';
@@ -192,26 +225,17 @@ const App: React.FC = () => {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: avatarGender === 'male' ? 'Zephyr' : 'Kore' } }
         },
         systemInstruction: `
-          You are FuturePrep AI. TARGET STACK: ${selectedTechs.join(', ')}. 
-          MODE: ${sessionMode.toUpperCase()}.
-          CURRENT MASTERY STAGE: ${masteryStage}.
-          LANGUAGE PREFERENCE: ${languagePreference === 'hinglish' ? 'HINGLISH (Hindi context + English technical terms)' : 'STRICT ENGLISH'}.
+          You are the 'FuturePrep Master Mentor & Interviewer'. 
           
-          PERSISTENCE PROTOCOL:
-          - If the user returns, acknowledge where we left off (e.g., "Pichli baar humne Load Balancing par baat khatam ki thi...").
-          - Always keep the conversation flowing.
+          PREPARATION MODE BEHAVIOR:
+          - Primary Goal: 100% Candidate Readiness.
+          - If the user doesn't know an answer, you MUST deliver a world-class, in-depth explanation (Hinglish).
+          - Use a structural approach: Concepts, Real-world use cases, Pitfalls, Interview Tips.
+          - Only use "[Q]" when presenting a fresh technical milestone question.
+          - 40 Milestones are required per stage.
           
-          LANGUAGE RULES (if Hinglish):
-          - Use Hindi for comforting, explaining, and conversational filler (e.g., "Aapka logic sahi hai," "Chaliye aage badhte hain").
-          - Use English for ALL technical concepts (e.g., "Memory Leak," "Concurrency Control," "Kubernetes Pods").
-          
-          MASTERY LADDER:
-          Stage 1: Basic concepts.
-          Stage 2: Real-world logic.
-          Stage 3: Design & Scale.
-          Stage 4: Edge cases & Debugging.
-          
-          When the user demonstrates mastery of the current stage, explicitly say "Stage Clear" and introduce the next level.
+          INTERVIEW MODE BEHAVIOR:
+          - Cold assessment. High Stakes. No feedback. strictly [Q] milestones.
         `
       }
     });
@@ -230,16 +254,15 @@ const App: React.FC = () => {
     <div className="relative w-12 h-12 flex items-center justify-center group">
       <div className={`absolute inset-0 bg-gradient-to-tr from-cyan-500 to-purple-600 rounded-xl rotate-12 blur-sm opacity-50 group-hover:rotate-45 transition-transform duration-500`}></div>
       <div className="relative z-10 text-2xl group-hover:scale-110 transition-transform">🚀</div>
-      <div className="absolute -top-1 -right-1 z-20 text-xs animate-bounce">🧠</div>
+      <div className="absolute -top-1 -right-1 z-20 text-xs animate-pulse text-red-500 font-bold">!</div>
     </div>
   );
 
   return (
     <div className="min-h-screen flex flex-col relative overflow-hidden">
-      {/* Background Decor */}
       <div className="fixed inset-0 pointer-events-none">
-        <div className={`absolute top-0 right-0 w-[600px] h-[600px] bg-${avatarGender === 'male' ? 'cyan' : 'pink'}-500/10 blur-[140px] rounded-full transition-colors duration-1000`}></div>
-        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-purple-500/10 blur-[140px] rounded-full"></div>
+        <div className={`absolute top-0 right-0 w-[600px] h-[600px] bg-${sessionMode === 'prep' ? 'purple' : 'cyan'}-500/10 blur-[140px] rounded-full transition-colors duration-1000`}></div>
+        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-red-500/10 blur-[140px] rounded-full"></div>
       </div>
 
       <header className="sticky top-0 z-50 glass border-b border-white/10 px-6 py-4 flex items-center justify-between">
@@ -247,25 +270,24 @@ const App: React.FC = () => {
           <RocketBrainLogo />
           <div>
             <h1 className="font-header text-xl font-bold tracking-tighter leading-none text-white">FUTUREPREP</h1>
-            <p className="text-[10px] mono text-cyan-400 font-bold uppercase tracking-widest">Persistence v3.6</p>
+            <p className={`text-[10px] mono font-bold uppercase tracking-widest animate-pulse ${sessionMode === 'prep' ? 'text-purple-400' : 'text-cyan-400'}`}>
+              {sessionMode === 'prep' ? 'Mentor Mode v5.0' : 'Interviewer v5.0'}
+            </p>
           </div>
         </div>
 
-        <div className="flex items-center space-x-6">
-          <div className="hidden lg:flex bg-slate-900/80 rounded-full p-1 border border-white/10">
+        <div className="flex items-center space-x-4">
+           <div className="hidden lg:flex bg-slate-900/80 rounded-full p-1 border border-white/10">
             <button 
               onClick={() => setLanguagePreference('english')}
-              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'english' ? 'bg-white text-slate-900' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'english' ? 'bg-white text-slate-900 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >ENGLISH</button>
             <button 
               onClick={() => setLanguagePreference('hinglish')}
-              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'hinglish' ? 'bg-white text-slate-900' : 'text-slate-500 hover:text-slate-300'}`}
+              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'hinglish' ? 'bg-white text-slate-900 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
             >HINGLISH</button>
           </div>
-          <div className="hidden md:flex bg-slate-900/80 rounded-full p-1 border border-white/10">
-            <button onClick={() => setAvatarGender('male')} disabled={isLive} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${avatarGender === 'male' ? 'bg-cyan-500 text-white' : 'text-slate-500'}`}>MALE</button>
-            <button onClick={() => setAvatarGender('female')} disabled={isLive} className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${avatarGender === 'female' ? 'bg-pink-500 text-white' : 'text-slate-500'}`}>FEMALE</button>
-          </div>
+          <button onClick={clearAllData} className="text-[10px] text-slate-500 hover:text-red-500 font-bold transition-colors uppercase tracking-widest">Wipe Memory</button>
         </div>
       </header>
 
@@ -274,17 +296,20 @@ const App: React.FC = () => {
           <div className="space-y-12 animate-in fade-in slide-in-from-bottom-6 duration-700">
             <section className="text-center space-y-6">
               <h2 className="text-4xl md:text-7xl font-header font-black leading-none text-white italic">
-                {languagePreference === 'hinglish' ? 'READY HAIN AAP?' : 'ENGAGE THE CORE'}
+                {languagePreference === 'hinglish' ? 'KAISE PREPARE KAREIN?' : 'CHOOSE PATHWAY'}
               </h2>
-              <p className="text-slate-400 text-lg max-w-xl mx-auto font-medium">
-                {languagePreference === 'hinglish' 
-                  ? 'Aapki progress automatically save ho rahi hai. Kahin se bhi resume karein.' 
-                  : 'Your progress is synchronized across sessions. Resume from any point.'}
-              </p>
+              <div className="flex justify-center items-center space-x-4">
+                 {[1,2,3,4].map(s => (
+                   <div key={s} className="flex flex-col items-center space-y-1">
+                     <div className={`w-16 h-2 rounded-full transition-all duration-500 ${masteryStage >= s ? (sessionMode === 'prep' ? 'bg-purple-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]' : 'bg-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.5)]') : 'bg-slate-800'}`} />
+                     <span className={`text-[8px] font-bold ${masteryStage >= s ? 'text-white' : 'text-slate-600'}`}>STAGE {s}</span>
+                   </div>
+                 ))}
+              </div>
             </section>
 
-            <div className="max-w-2xl mx-auto relative group">
-              <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500 to-purple-600 rounded-3xl blur opacity-25 group-hover:opacity-40 transition duration-1000"></div>
+            <div className="max-w-2xl mx-auto relative group z-30">
+              <div className={`absolute -inset-1 bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-500 to-pink-600' : 'from-cyan-500 to-blue-600'} rounded-3xl blur opacity-25 group-hover:opacity-40 transition duration-1000`}></div>
               <div className="relative glass rounded-3xl p-2 flex flex-col">
                 <div className="flex items-center">
                   <div className="pl-6 text-2xl">🔍</div>
@@ -292,29 +317,34 @@ const App: React.FC = () => {
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search Tech Modules..."
+                    placeholder="Search Skill (e.g. AWS, Node, DSA...)"
                     className="w-full bg-transparent p-6 text-xl focus:outline-none text-white font-medium placeholder-slate-600"
                   />
-                  {isSearching && <div className="pr-6 animate-spin text-cyan-400">⚙️</div>}
+                  {isSearching && <div className="pr-6 animate-spin text-cyan-400 text-2xl">⚙️</div>}
                 </div>
                 {selectedTechs.length > 0 && (
                   <div className="px-6 pb-4 flex flex-wrap gap-2 animate-in fade-in duration-300">
                     {selectedTechs.map(tech => (
-                      <div key={tech} className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl border border-${avatarGender === 'male' ? 'cyan' : 'pink'}-500/40 bg-${avatarGender === 'male' ? 'cyan' : 'pink'}-500/10 text-xs font-bold`}>
+                      <div key={tech} className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl border border-white/10 ${sessionMode === 'prep' ? 'bg-purple-500/10' : 'bg-cyan-500/10'} text-xs font-bold`}>
                         <span className="text-white">{tech}</span>
                         <button onClick={() => toggleTech(tech)} className="text-slate-400 hover:text-white transition-colors">×</button>
                       </div>
                     ))}
-                    <button onClick={clearSessionData} className="text-[10px] text-slate-500 uppercase tracking-widest hover:text-red-400 transition-colors ml-2 font-bold">Clear All</button>
                   </div>
                 )}
               </div>
+              
+              {/* RESTORED SUGGESTIONS DROPDOWN */}
               {suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-4 glass rounded-2xl overflow-hidden border border-white/10 z-20 shadow-2xl">
+                <div className="absolute top-full left-0 right-0 mt-4 glass rounded-2xl overflow-hidden border border-white/10 z-50 shadow-2xl animate-in slide-in-from-top-2 duration-300">
                   {suggestions.map((tech, i) => (
-                    <button key={i} onClick={() => toggleTech(tech)} className="w-full text-left px-8 py-4 hover:bg-white/10 transition-colors flex items-center justify-between group">
+                    <button 
+                      key={i} 
+                      onClick={() => toggleTech(tech)} 
+                      className="w-full text-left px-8 py-4 hover:bg-white/10 transition-colors flex items-center justify-between group"
+                    >
                       <span className="text-slate-200 font-bold">{tech}</span>
-                      <span className="opacity-0 group-hover:opacity-100 text-cyan-400 text-xs font-bold uppercase tracking-tighter">+ LOAD MODULE</span>
+                      <span className="text-cyan-400 text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">Select Tech</span>
                     </button>
                   ))}
                 </div>
@@ -322,34 +352,44 @@ const App: React.FC = () => {
             </div>
 
             {selectedTechs.length > 0 && (
-              <div className="animate-in zoom-in-95 duration-500 space-y-10 text-center">
+              <div className="animate-in zoom-in-95 duration-500 space-y-12">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-                  <div onClick={() => setSessionMode('interview')} className={`group p-10 glass rounded-[40px] cursor-pointer border-2 transition-all hover:-translate-y-1 ${sessionMode === 'interview' ? 'border-cyan-500 bg-cyan-500/5' : 'border-white/5'}`}>
-                    <div className="text-6xl mb-6">⚔️</div>
-                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white">Elite Interview</h3>
-                    <p className="text-slate-400 text-sm">Strict evaluation. Progress is synchronized.</p>
+                   <div 
+                    onClick={() => setSessionMode('prep')}
+                    className={`group p-8 glass rounded-[40px] cursor-pointer border-2 transition-all hover:scale-[1.02] ${sessionMode === 'prep' ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_30px_rgba(139,92,246,0.2)]' : 'border-white/5 opacity-50'}`}
+                  >
+                    <div className="text-5xl mb-4 group-hover:rotate-6 transition-transform">🎓</div>
+                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white tracking-tighter">Mentor Mode</h3>
+                    <p className="text-slate-400 text-xs leading-relaxed">Deep-dive learning. Mentorship focus for 40 milestones.</p>
                   </div>
-                  <div onClick={() => setSessionMode('prep')} className={`group p-10 glass rounded-[40px] cursor-pointer border-2 transition-all hover:-translate-y-1 ${sessionMode === 'prep' ? 'border-purple-500 bg-purple-500/5' : 'border-white/5'}`}>
-                    <div className="text-6xl mb-6">🧠</div>
-                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white">Advanced Prep</h3>
-                    <p className="text-slate-400 text-sm">Persistent mentoring. Pick up where you left off.</p>
+                  <div 
+                    onClick={() => setSessionMode('interview')}
+                    className={`group p-8 glass rounded-[40px] cursor-pointer border-2 transition-all hover:scale-[1.02] ${sessionMode === 'interview' ? 'border-cyan-500 bg-cyan-500/10 shadow-[0_0_30px_rgba(6,182,212,0.2)]' : 'border-white/5 opacity-50'}`}
+                  >
+                    <div className="text-5xl mb-4 group-hover:scale-110 transition-transform">💀</div>
+                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white tracking-tighter">Panel Mode</h3>
+                    <p className="text-slate-400 text-xs leading-relaxed">Pure assessment. No help. Test your limits.</p>
                   </div>
                 </div>
 
-                <div className="flex flex-col md:flex-row items-center justify-center gap-4">
-                  <button onClick={() => { clearSessionData(); setView('session'); startLiveSession(false); }} className="px-10 py-6 rounded-2xl bg-white text-slate-900 font-black text-xl hover:scale-105 active:scale-95 transition-all">NEW SESSION</button>
-                  {(conversationHistory.length > 0 || masteryStage > 1) && (
-                    <div className="relative group">
-                      <div className="absolute -inset-1 bg-cyan-400 blur opacity-20 group-hover:opacity-60 transition duration-1000 animate-pulse"></div>
-                      <button onClick={() => { setView('session'); startLiveSession(true); }} className="relative px-10 py-6 rounded-2xl bg-gradient-to-r from-cyan-600 to-purple-600 text-white font-black text-xl shadow-2xl hover:scale-105 active:scale-95 transition-all">
-                        RESUME (STAGE {masteryStage})
+                <div className="flex flex-col items-center space-y-4">
+                  <div className="flex flex-col md:flex-row items-center justify-center gap-4 w-full">
+                    <button 
+                      onClick={() => { clearAllData(); setView('session'); startLiveSession(false); }} 
+                      className={`px-12 py-7 rounded-3xl bg-white text-slate-900 font-black text-2xl hover:scale-105 active:scale-95 transition-all shadow-2xl`}
+                    >
+                      INITIALIZE
+                    </button>
+                    {(conversationHistory.length > 0 || questionCount > 0) && (
+                      <button 
+                        onClick={() => { setView('session'); startLiveSession(true); }} 
+                        className={`px-12 py-7 rounded-3xl bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-600 to-pink-600' : 'from-cyan-600 to-blue-600'} text-white font-black text-2xl shadow-2xl hover:scale-105 active:scale-95 transition-all`}
+                      >
+                        RECONNECT (Q{questionCount}/40)
                       </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
-                {lastActiveTime && (
-                  <p className="text-[10px] text-slate-500 mono uppercase tracking-widest">Last synced: {lastActiveTime}</p>
-                )}
               </div>
             )}
           </div>
@@ -357,45 +397,53 @@ const App: React.FC = () => {
 
         {view === 'session' && (
           <div className="h-full flex flex-col items-center justify-center max-w-4xl mx-auto space-y-12 animate-in zoom-in-95 duration-500 relative">
-            <div className="absolute top-0 left-0 scanner"></div>
+            <div className={`absolute top-0 left-0 scanner ${sessionMode === 'prep' ? 'bg-purple-500' : 'bg-cyan-500'}`}></div>
+            
             <div className="relative group">
-              <div className={`absolute -inset-24 bg-${avatarGender === 'male' ? 'cyan' : 'pink'}-500/10 blur-[120px] rounded-full opacity-60 transition-opacity duration-1000`} />
-              <div className={`relative w-80 h-80 rounded-[80px] border-4 ${avatarGender === 'male' ? 'border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.2)]' : 'border-pink-500 shadow-[0_0_40px_rgba(236,72,153,0.2)]'} flex items-center justify-center bg-slate-950 overflow-hidden`}>
-                <div className={`flex flex-col items-center transition-all duration-500 ${isLive ? 'scale-110' : 'scale-100'} ${avatarGender === 'male' ? 'avatar-glow-male' : 'avatar-glow-female'}`}>
-                  <span className="text-9xl mb-4 select-none">{avatarGender === 'male' ? '🤖' : '👩‍🚀'}</span>
+              <div className={`absolute -inset-24 bg-${sessionMode === 'prep' ? 'purple' : 'cyan'}-500/10 blur-[120px] rounded-full opacity-60 animate-pulse`} />
+              <div className={`relative w-80 h-80 rounded-[80px] border-4 ${sessionMode === 'prep' ? 'border-purple-500 shadow-[0_0_40px_rgba(139,92,246,0.3)]' : 'border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'} flex items-center justify-center bg-slate-950 overflow-hidden`}>
+                <div className={`flex flex-col items-center transition-all duration-700 ${isLive ? 'scale-110' : 'scale-100'}`}>
+                  <span className="text-9xl mb-4 select-none">
+                    {avatarGender === 'male' ? '🤖' : '👩‍🚀'}
+                  </span>
                 </div>
-                {isLive && (
-                  <div className="absolute inset-x-0 bottom-12 flex items-end justify-center space-x-1.5 px-10">
-                    {[5,8,4,12,6,14,4,9,7,13,5,8,6].map((h, i) => (
-                      <div key={i} className={`flex-1 ${avatarGender === 'male' ? 'bg-cyan-500' : 'bg-pink-500'} rounded-full animate-bounce`} style={{ height: `${h * 4}px`, animationDelay: `${i * 120}ms` }} />
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
 
-            <div className="text-center space-y-4">
-              <div className="w-full max-w-md mx-auto h-2 bg-slate-800 rounded-full overflow-hidden mb-6 border border-white/5">
-                <div className="h-full bg-gradient-to-r from-cyan-500 to-purple-500 transition-all duration-1000" style={{ width: `${(masteryStage / 4) * 100}%` }} />
+            <div className="text-center space-y-6 w-full max-w-lg">
+              <div className="space-y-2">
+                <div className="flex justify-between text-[10px] font-black uppercase tracking-[0.2em]">
+                  <span className={sessionMode === 'prep' ? 'text-purple-400' : 'text-cyan-400'}>STAGE {masteryStage} MILESTONE</span>
+                  <span className="text-slate-500">{questionCount} / 40 PROGRESS</span>
+                </div>
+                <div className="w-full h-3 bg-slate-900 rounded-full overflow-hidden border border-white/5 p-0.5">
+                  <div 
+                    className={`h-full rounded-full transition-all duration-1000 bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-500 to-pink-500' : 'from-cyan-500 to-blue-500'}`} 
+                    style={{ width: `${(questionCount / 40) * 100}%` }} 
+                  />
+                </div>
               </div>
-              <h2 className="text-3xl font-header font-black tracking-tighter text-white uppercase italic">
-                STAGE {masteryStage} // {languagePreference.toUpperCase()} MODE
+              <h2 className="text-2xl font-header font-black tracking-tight text-white uppercase italic">
+                {sessionMode === 'prep' ? 'MENTOR MODE' : 'PANEL MODE'}
               </h2>
             </div>
 
             <div className="flex flex-col items-center space-y-8 w-full">
               {!isLive ? (
-                <button onClick={() => startLiveSession(conversationHistory.length > 0)} className="px-20 py-8 rounded-3xl bg-white text-slate-950 font-black text-3xl shadow-2xl hover:scale-105 transition-all uppercase italic">Establish Uplink</button>
+                <button 
+                  onClick={() => startLiveSession(true)} 
+                  className="px-24 py-9 rounded-[40px] bg-white text-slate-950 font-black text-4xl shadow-2xl hover:scale-105 transition-all uppercase italic tracking-tighter"
+                >
+                  START SESSION
+                </button>
               ) : (
                 <div className="flex flex-col items-center space-y-6 w-full">
-                  <button onClick={stopSession} className="px-20 py-8 rounded-3xl bg-red-600 text-white font-black text-3xl shadow-red-500/30 shadow-2xl hover:bg-red-700 transition-all hover:scale-105 active:scale-95">CLOSE CONNECTION</button>
-                  <p className="text-slate-500 font-mono text-xs uppercase tracking-widest animate-pulse">Syncing Session to Matrix...</p>
-                </div>
-              )}
-              {isLive && (
-                <div className="flex items-center space-x-4 text-red-500 animate-pulse font-mono font-bold text-lg bg-red-500/5 border border-red-500/20 px-8 py-3 rounded-full shadow-[0_0_20px_rgba(239,44,44,0.1)]">
-                  <div className="w-3 h-3 rounded-full bg-red-500 shadow-[0_0_15px_red]" />
-                  <span>TRANSMITTING...</span>
+                  <button 
+                    onClick={stopSession} 
+                    className="px-20 py-8 rounded-[35px] bg-red-600 text-white font-black text-3xl shadow-red-500/40 shadow-2xl hover:bg-red-700 transition-all hover:scale-105 active:scale-95 uppercase"
+                  >
+                    DISCONNECT
+                  </button>
                 </div>
               )}
             </div>
@@ -403,36 +451,34 @@ const App: React.FC = () => {
         )}
 
         {view === 'feedback' && (
-          <div className="max-w-4xl mx-auto space-y-10 py-12 animate-in slide-in-from-bottom-12 duration-1000">
+          <div className="max-w-4xl mx-auto space-y-12 py-12 animate-in slide-in-from-bottom-12 duration-1000">
              <div className="text-center space-y-4">
-                <div className="inline-block px-6 py-2 rounded-full bg-cyan-500/10 text-cyan-400 text-xs font-black tracking-widest border border-cyan-500/20 uppercase">Session Snapshot</div>
-                <h2 className="text-6xl font-header font-black text-white italic tracking-tighter">DATA RETRIEVED</h2>
+                <div className={`inline-block px-8 py-3 rounded-full ${sessionMode === 'prep' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'} text-[10px] font-black tracking-widest border uppercase italic`}>Protocol Summary</div>
+                <h2 className="text-7xl font-header font-black text-white italic tracking-tighter">DATA LOGGED</h2>
              </div>
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="glass p-10 rounded-[40px] text-center border-b-8 border-cyan-500 shadow-cyan-500/10">
-                  <div className="text-6xl font-header font-black mb-2 text-white">96</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Tech Depth</div>
+
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                <div className={`glass p-12 rounded-[50px] text-center border-b-8 ${sessionMode === 'prep' ? 'border-purple-500' : 'border-cyan-500'} transition-transform hover:scale-105`}>
+                  <div className="text-7xl font-header font-black mb-3 text-white">{questionCount}</div>
+                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Milestones</div>
                 </div>
-                <div className="glass p-10 rounded-[40px] text-center border-b-8 border-purple-500">
-                  <div className="text-6xl font-header font-black mb-2 text-white">{masteryStage}</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Stage Cleared</div>
+                <div className="glass p-12 rounded-[50px] text-center border-b-8 border-red-500 transition-transform hover:scale-105">
+                  <div className="text-7xl font-header font-black mb-3 text-white">{mistakeLog.length}</div>
+                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Topics to Review</div>
                 </div>
-                <div className="glass p-10 rounded-[40px] text-center border-b-8 border-pink-500">
-                  <div className="text-6xl font-header font-black mb-2 text-white">S</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Adaptability</div>
+                <div className={`glass p-12 rounded-[50px] text-center border-b-8 ${sessionMode === 'prep' ? 'border-pink-500' : 'border-blue-500'} transition-transform hover:scale-105`}>
+                  <div className="text-7xl font-header font-black mb-3 text-white">{masteryStage}</div>
+                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Stage Rank</div>
                 </div>
              </div>
-             <div className="glass p-10 rounded-[40px] border border-white/5 space-y-6">
-                <h3 className="text-xl font-bold text-white uppercase tracking-widest font-header">Strategic Notes</h3>
-                <p className="text-slate-400 leading-relaxed italic">"Your architectural understanding is expanding. Reaching Stage {masteryStage} is a solid milestone. Focus on edge-case recovery next session."</p>
-             </div>
-             <button onClick={() => { setView('dashboard'); setSearchTerm(''); }} className="w-full py-8 rounded-3xl bg-white text-slate-950 font-black text-2xl hover:bg-slate-200 transition-all shadow-2xl active:scale-95">RETURN TO MATRIX</button>
+
+             <button onClick={() => { setView('dashboard'); setSearchTerm(''); }} className="w-full py-10 rounded-[40px] bg-white text-slate-950 font-black text-3xl hover:bg-slate-200 transition-all shadow-2xl active:scale-95 uppercase italic tracking-tighter">BACK TO DASHBOARD</button>
           </div>
         )}
       </main>
 
-      <footer className="p-8 text-center text-slate-600 text-[10px] tracking-[0.5em] font-mono uppercase opacity-40">
-        FuturePrep // v3.6.0 // Hinglish Module Loaded // Drive Persistence: 100%
+      <footer className="p-10 text-center text-slate-700 text-[10px] tracking-[0.8em] font-mono uppercase opacity-30">
+        FuturePrep // Rigor: ${masteryStage} // Drive: Mental_v5.0
       </footer>
     </div>
   );

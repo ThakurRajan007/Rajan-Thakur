@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
-import { SessionResult } from "../types";
+import { SessionResult } from "../types.ts";
 
 export const searchTechnologies = async (query: string): Promise<string[]> => {
   if (!query || query.length < 2) return [];
