@@ -1,6 +1,6 @@
 
 export type ViewMode = 'dashboard' | 'session' | 'admin' | 'feedback';
-export type SessionMode = 'interview' | 'prep';
+export type SessionMode = 'interview' | 'prep' | 'study' | 'course';
 export type AvatarGender = 'male' | 'female';
 
 export interface User {

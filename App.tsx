@@ -14,11 +14,14 @@ const App: React.FC = () => {
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [selectedTechs, setSelectedTechs] = useState<string[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
   
+  // Persistence State
   const [conversationHistory, setConversationHistory] = useState<string[]>([]);
   const [masteryStage, setMasteryStage] = useState(1);
   const [questionCount, setQuestionCount] = useState(0);
   const [mistakeLog, setMistakeLog] = useState<string[]>([]);
+  const [courseProgress, setCourseProgress] = useState(0); // Tracks current module (0-10)
   const [lastActiveTime, setLastActiveTime] = useState<string | null>(null);
 
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -30,27 +33,32 @@ const App: React.FC = () => {
   const currentInputTranscription = useRef('');
   const currentOutputTranscription = useRef('');
 
+  // --- PERSISTENCE ENGINE ---
   useEffect(() => {
     try {
-      const savedTechs = localStorage.getItem('fp_techs');
-      const savedHistory = localStorage.getItem('fp_history');
-      const savedStage = localStorage.getItem('fp_stage');
-      const savedQCount = localStorage.getItem('fp_qcount');
-      const savedMistakes = localStorage.getItem('fp_mistakes');
-      const savedLang = localStorage.getItem('fp_lang');
-      const savedTime = localStorage.getItem('fp_time');
-      const savedMode = localStorage.getItem('fp_mode');
+      const saved = {
+        techs: localStorage.getItem('fp_techs'),
+        history: localStorage.getItem('fp_history'),
+        stage: localStorage.getItem('fp_stage'),
+        qCount: localStorage.getItem('fp_qcount'),
+        mistakes: localStorage.getItem('fp_mistakes'),
+        lang: localStorage.getItem('fp_lang'),
+        time: localStorage.getItem('fp_time'),
+        mode: localStorage.getItem('fp_mode'),
+        course: localStorage.getItem('fp_course_progress')
+      };
 
-      if (savedTechs) setSelectedTechs(JSON.parse(savedTechs));
-      if (savedHistory) setConversationHistory(JSON.parse(savedHistory));
-      if (savedStage) setMasteryStage(parseInt(savedStage, 10));
-      if (savedQCount) setQuestionCount(parseInt(savedQCount, 10));
-      if (savedMistakes) setMistakeLog(JSON.parse(savedMistakes));
-      if (savedLang) setLanguagePreference(savedLang as 'english' | 'hinglish');
-      if (savedTime) setLastActiveTime(savedTime);
-      if (savedMode) setSessionMode(savedMode as SessionMode);
+      if (saved.techs) setSelectedTechs(JSON.parse(saved.techs));
+      if (saved.history) setConversationHistory(JSON.parse(saved.history));
+      if (saved.stage) setMasteryStage(parseInt(saved.stage, 10) || 1);
+      if (saved.qCount) setQuestionCount(parseInt(saved.qCount, 10) || 0);
+      if (saved.mistakes) setMistakeLog(JSON.parse(saved.mistakes));
+      if (saved.lang) setLanguagePreference(saved.lang as 'english' | 'hinglish');
+      if (saved.time) setLastActiveTime(saved.time);
+      if (saved.mode) setSessionMode(saved.mode as SessionMode);
+      if (saved.course) setCourseProgress(parseInt(saved.course, 10) || 0);
     } catch (e) {
-      console.error("Failed to load persistence data", e);
+      console.error("Neural Cache Load Failure", e);
     }
   }, []);
 
@@ -62,23 +70,27 @@ const App: React.FC = () => {
     localStorage.setItem('fp_mistakes', JSON.stringify(mistakeLog));
     localStorage.setItem('fp_lang', languagePreference);
     localStorage.setItem('fp_mode', sessionMode);
+    localStorage.setItem('fp_course_progress', courseProgress.toString());
     if (isLive) {
       const now = new Date().toLocaleTimeString();
       localStorage.setItem('fp_time', now);
       setLastActiveTime(now);
     }
-  }, [selectedTechs, conversationHistory, masteryStage, questionCount, mistakeLog, languagePreference, sessionMode, isLive]);
+  }, [selectedTechs, conversationHistory, masteryStage, questionCount, mistakeLog, languagePreference, sessionMode, courseProgress, isLive]);
 
+  // Search Logic
   useEffect(() => {
     const fetchSuggestions = async () => {
-      if (searchTerm.length < 2) {
+      if (searchTerm.trim().length < 2) {
         setSuggestions([]);
+        setHasSearched(false);
         return;
       }
       setIsSearching(true);
       try {
         const results = await searchTechnologies(searchTerm);
         setSuggestions(results);
+        setHasSearched(true);
       } catch (error) {
         console.error("Technology search failed", error);
       } finally {
@@ -86,28 +98,38 @@ const App: React.FC = () => {
       }
     };
 
-    const timer = setTimeout(fetchSuggestions, 500);
+    const timer = setTimeout(fetchSuggestions, 400);
     return () => clearTimeout(timer);
   }, [searchTerm]);
 
   const toggleTech = (tech: string) => {
-    setSelectedTechs(prev => 
-      prev.includes(tech) ? prev.filter(t => t !== tech) : [...prev, tech]
-    );
+    setSelectedTechs([tech]); // Usually one main topic for a deep course/session
     setSearchTerm('');
     setSuggestions([]);
+    setHasSearched(false);
   };
 
   const clearAllData = () => {
-    localStorage.clear();
-    setConversationHistory([]);
-    setMasteryStage(1);
-    setQuestionCount(0);
-    setMistakeLog([]);
-    setSelectedTechs([]);
-    setView('dashboard');
+    if(window.confirm("RESET SYSTEM? This will wipe all progress, course modules, and history. AI will forget you.")) {
+      localStorage.clear();
+      setConversationHistory([]);
+      setMasteryStage(1);
+      setQuestionCount(0);
+      setMistakeLog([]);
+      setCourseProgress(0);
+      setSelectedTechs([]);
+      setView('dashboard');
+    }
   };
 
+  const getModeColor = () => {
+    if (sessionMode === 'prep') return 'purple';
+    if (sessionMode === 'study') return 'emerald';
+    if (sessionMode === 'course') return 'teal';
+    return 'cyan';
+  };
+
+  // --- CORE SESSION ENGINE ---
   const startLiveSession = async (isResuming = false) => {
     if (selectedTechs.length === 0) return;
     
@@ -143,18 +165,35 @@ const App: React.FC = () => {
           source.connect(processor);
           processor.connect(inputCtx.destination);
           
+          let modeSpec = "";
+          if (sessionMode === 'course') {
+            modeSpec = `
+              PROTOCOL: STRUCTURED COMPLETE COURSE.
+              ROLE: Senior Technical Architect & Instructor.
+              OBJECTIVE: Teach ${selectedTechs.join(', ')} from ABSOLUTE ZERO to EXPERT.
+              STRUCTURE: 
+              - Current Lesson: ${courseProgress}/10. 
+              - If progress is 0: Start with a clear 10-module roadmap.
+              - Each lesson must be deep, clearing all fundamentals before advancing.
+              - When a major concept/module is fully taught and understood, end your response with "[MODULE_COMPLETE]".
+              - Focus on real-world implementation, architecture, and interview theory.
+            `;
+          } else if (sessionMode === 'study') {
+            modeSpec = `PROTOCOL: STUDY MODE. Pure Doubt Clearing. No testing. In-depth explanations for ${selectedTechs.join(', ')}.`;
+          } else if (sessionMode === 'prep') {
+            modeSpec = `PROTOCOL: PREP MODE. Mentor focus. Use [Q] for milestones.`;
+          } else {
+            modeSpec = `PROTOCOL: PANEL MODE. Cold assessment. Strictly milestone questions using [Q].`;
+          }
+
           const prompt = `
-            SYSTEM_PROTOCOL: ${sessionMode.toUpperCase()}
-            RESUMING: ${isResuming}
-            STAGE: ${masteryStage}
-            CURRENT_PROGRESS: ${questionCount} / 40 Core Milestones.
-            TECH_STACK: ${selectedTechs.join(', ')}
-            
-            DIRECTIONS:
-            1. Use [Q] marker ONLY for new, core milestones.
-            2. MENTOR MODE: If User says "I don't know" or struggles, stop the test. Provide a "Masterclass" deep-dive explanation.
-            3. Use HINGLISH: Technical concepts in English, conversational flow in Hindi.
-            4. Do not increment the milestone count while teaching. Only use [Q] when you're ready to test again.
+            ${modeSpec}
+            LANGUAGE: ${languagePreference.toUpperCase()} (Hinglish mix: technical depth in English, conversation in Hindi).
+            CACHE_MEMORY: 
+            - Previous Mistake Log: ${mistakeLog.join(', ')}
+            - Mastery Stage: ${masteryStage}
+            - Last Known Progress: Module ${courseProgress}/10
+            - Resuming Session: ${isResuming}
           `;
           sessionPromise.then(s => s.sendRealtimeInput({ text: prompt }));
         },
@@ -170,18 +209,21 @@ const App: React.FC = () => {
             const input = currentInputTranscription.current;
             
             if (output || input) {
-              const cleanedOutput = output.replace(/\[Q\]/g, '').trim();
-              setConversationHistory(prev => [...prev, `Q: ${cleanedOutput}`, `A: ${input}`].slice(-40));
+              setConversationHistory(prev => [...prev, `AI: ${output.replace(/\[Q\]|\[MODULE_COMPLETE\]/g, '')}`, `User: ${input}`].slice(-30));
               
-              if (output.includes('[Q]')) {
+              if (output.includes('[Q]') && (sessionMode === 'prep' || sessionMode === 'interview')) {
                 setQuestionCount(c => c + 1);
               }
 
-              if (output.toLowerCase().includes("galat") || output.toLowerCase().includes("wrong")) {
-                setMistakeLog(prev => [...prev, `Logic Error at Milestone ${questionCount}`].slice(-20));
+              if (output.includes('[MODULE_COMPLETE]') && sessionMode === 'course') {
+                setCourseProgress(p => Math.min(p + 1, 10));
               }
 
-              if (questionCount >= 40 && (output.toLowerCase().includes("stage clear") || output.toLowerCase().includes("pass"))) {
+              if (output.toLowerCase().includes("wrong") || output.toLowerCase().includes("galat")) {
+                setMistakeLog(prev => [...prev, `${selectedTechs[0]} Concept Check`].slice(-10));
+              }
+
+              if (questionCount >= 40 && output.toLowerCase().includes("pass")) {
                 setMasteryStage(s => Math.min(s + 1, 4));
                 setQuestionCount(0);
               }
@@ -225,17 +267,11 @@ const App: React.FC = () => {
           voiceConfig: { prebuiltVoiceConfig: { voiceName: avatarGender === 'male' ? 'Zephyr' : 'Kore' } }
         },
         systemInstruction: `
-          You are the 'FuturePrep Master Mentor & Interviewer'. 
-          
-          PREPARATION MODE BEHAVIOR:
-          - Primary Goal: 100% Candidate Readiness.
-          - If the user doesn't know an answer, you MUST deliver a world-class, in-depth explanation (Hinglish).
-          - Use a structural approach: Concepts, Real-world use cases, Pitfalls, Interview Tips.
-          - Only use "[Q]" when presenting a fresh technical milestone question.
-          - 40 Milestones are required per stage.
-          
-          INTERVIEW MODE BEHAVIOR:
-          - Cold assessment. High Stakes. No feedback. strictly [Q] milestones.
+          You are the 'FuturePrep Neural Core'.
+          COURSE MODE: You are a structural teacher. Teach ${selectedTechs.join(', ')} from the ground up.
+          STUDY MODE: Clear all technical doubts patiently.
+          PREP MODE: Mentor with milestones.
+          Always use HINGLISH. Maintain a helpful, senior professional persona.
         `
       }
     });
@@ -250,181 +286,243 @@ const App: React.FC = () => {
     setView('feedback');
   };
 
-  const RocketBrainLogo = () => (
-    <div className="relative w-12 h-12 flex items-center justify-center group">
-      <div className={`absolute inset-0 bg-gradient-to-tr from-cyan-500 to-purple-600 rounded-xl rotate-12 blur-sm opacity-50 group-hover:rotate-45 transition-transform duration-500`}></div>
-      <div className="relative z-10 text-2xl group-hover:scale-110 transition-transform">🚀</div>
-      <div className="absolute -top-1 -right-1 z-20 text-xs animate-pulse text-red-500 font-bold">!</div>
-    </div>
-  );
-
   return (
-    <div className="min-h-screen flex flex-col relative overflow-hidden">
+    <div className="min-h-screen flex flex-col relative overflow-hidden bg-[#020617]">
+      {/* Dynamic Background */}
       <div className="fixed inset-0 pointer-events-none">
-        <div className={`absolute top-0 right-0 w-[600px] h-[600px] bg-${sessionMode === 'prep' ? 'purple' : 'cyan'}-500/10 blur-[140px] rounded-full transition-colors duration-1000`}></div>
-        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-red-500/10 blur-[140px] rounded-full"></div>
+        <div className={`absolute top-0 right-0 w-[800px] h-[800px] bg-${getModeColor()}-500/5 blur-[120px] rounded-full transition-colors duration-1000`}></div>
+        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-red-500/5 blur-[120px] rounded-full"></div>
       </div>
 
       <header className="sticky top-0 z-50 glass border-b border-white/10 px-6 py-4 flex items-center justify-between">
         <div className="flex items-center space-x-3 cursor-pointer" onClick={() => setView('dashboard')}>
-          <RocketBrainLogo />
+          <div className="text-3xl filter drop-shadow-[0_0_8px_rgba(255,255,255,0.5)]">🚀</div>
           <div>
-            <h1 className="font-header text-xl font-bold tracking-tighter leading-none text-white">FUTUREPREP</h1>
-            <p className={`text-[10px] mono font-bold uppercase tracking-widest animate-pulse ${sessionMode === 'prep' ? 'text-purple-400' : 'text-cyan-400'}`}>
-              {sessionMode === 'prep' ? 'Mentor Mode v5.0' : 'Interviewer v5.0'}
-            </p>
+            <h1 className="font-header text-xl font-black tracking-tighter text-white uppercase italic">FUTUREPREP</h1>
+            <div className="flex items-center space-x-2">
+              <span className={`text-[9px] font-bold uppercase tracking-widest text-${getModeColor()}-400`}>Neural Core v7.5</span>
+              <span className="w-1 h-1 bg-white/20 rounded-full"></span>
+              <span className="text-[8px] text-slate-500 font-bold uppercase tracking-tighter">Secure Link: Online</span>
+            </div>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
-           <div className="hidden lg:flex bg-slate-900/80 rounded-full p-1 border border-white/10">
-            <button 
-              onClick={() => setLanguagePreference('english')}
-              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'english' ? 'bg-white text-slate-900 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >ENGLISH</button>
-            <button 
-              onClick={() => setLanguagePreference('hinglish')}
-              className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-all ${languagePreference === 'hinglish' ? 'bg-white text-slate-900 shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}
-            >HINGLISH</button>
+        <div className="flex items-center space-x-6">
+           <div className="hidden md:flex bg-slate-900/80 rounded-full p-1 border border-white/10">
+            {['english', 'hinglish'].map(l => (
+              <button 
+                key={l}
+                onClick={() => setLanguagePreference(l as any)}
+                className={`px-5 py-2 rounded-full text-[10px] font-black transition-all ${languagePreference === l ? 'bg-white text-slate-900 shadow-xl scale-105' : 'text-slate-500 hover:text-slate-300'}`}
+              >{l.toUpperCase()}</button>
+            ))}
           </div>
-          <button onClick={clearAllData} className="text-[10px] text-slate-500 hover:text-red-500 font-bold transition-colors uppercase tracking-widest">Wipe Memory</button>
+          <button onClick={clearAllData} className="text-[10px] text-slate-600 hover:text-red-500 font-bold transition-colors uppercase tracking-[0.2em]">Reset Brain</button>
         </div>
       </header>
 
-      <main className="flex-1 p-6 md:p-12 max-w-6xl mx-auto w-full z-10">
+      <main className="flex-1 p-6 md:p-12 max-w-7xl mx-auto w-full z-10">
         {view === 'dashboard' && (
-          <div className="space-y-12 animate-in fade-in slide-in-from-bottom-6 duration-700">
+          <div className="space-y-16 animate-in fade-in slide-in-from-bottom-8 duration-700">
             <section className="text-center space-y-6">
-              <h2 className="text-4xl md:text-7xl font-header font-black leading-none text-white italic">
-                {languagePreference === 'hinglish' ? 'KAISE PREPARE KAREIN?' : 'CHOOSE PATHWAY'}
+              <h2 className="text-5xl md:text-8xl font-header font-black leading-none text-white italic tracking-tighter">
+                {languagePreference === 'hinglish' ? 'KYA MASTER KARNA HAI?' : 'NEURAL HUB'}
               </h2>
-              <div className="flex justify-center items-center space-x-4">
-                 {[1,2,3,4].map(s => (
-                   <div key={s} className="flex flex-col items-center space-y-1">
-                     <div className={`w-16 h-2 rounded-full transition-all duration-500 ${masteryStage >= s ? (sessionMode === 'prep' ? 'bg-purple-500 shadow-[0_0_15px_rgba(139,92,246,0.5)]' : 'bg-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.5)]') : 'bg-slate-800'}`} />
-                     <span className={`text-[8px] font-bold ${masteryStage >= s ? 'text-white' : 'text-slate-600'}`}>STAGE {s}</span>
-                   </div>
-                 ))}
-              </div>
+              <p className="text-slate-500 font-bold text-sm tracking-widest uppercase italic">Select topic and select protocol</p>
             </section>
 
-            <div className="max-w-2xl mx-auto relative group z-30">
-              <div className={`absolute -inset-1 bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-500 to-pink-600' : 'from-cyan-500 to-blue-600'} rounded-3xl blur opacity-25 group-hover:opacity-40 transition duration-1000`}></div>
-              <div className="relative glass rounded-3xl p-2 flex flex-col">
+            <div className="max-w-3xl mx-auto relative group z-30">
+              <div className={`absolute -inset-2 bg-gradient-to-r from-${getModeColor()}-500/20 to-transparent rounded-[40px] blur opacity-50 group-hover:opacity-100 transition duration-1000`}></div>
+              <div className="relative glass rounded-[40px] p-3 flex flex-col shadow-2xl">
                 <div className="flex items-center">
-                  <div className="pl-6 text-2xl">🔍</div>
+                  <div className="pl-8 text-3xl">🔍</div>
                   <input 
                     type="text"
                     value={searchTerm}
                     onChange={(e) => setSearchTerm(e.target.value)}
-                    placeholder="Search Skill (e.g. AWS, Node, DSA...)"
-                    className="w-full bg-transparent p-6 text-xl focus:outline-none text-white font-medium placeholder-slate-600"
+                    placeholder="Course Topic (VMware, Azure, AWS, VSIF...)"
+                    className="w-full bg-transparent p-8 text-2xl focus:outline-none text-white font-black placeholder-slate-700 uppercase italic tracking-tighter"
                   />
-                  {isSearching && <div className="pr-6 animate-spin text-cyan-400 text-2xl">⚙️</div>}
+                  {isSearching && <div className="pr-8 animate-spin text-cyan-400 text-3xl">⚙️</div>}
                 </div>
                 {selectedTechs.length > 0 && (
-                  <div className="px-6 pb-4 flex flex-wrap gap-2 animate-in fade-in duration-300">
+                  <div className="px-8 pb-6 flex flex-wrap gap-3 animate-in fade-in">
                     {selectedTechs.map(tech => (
-                      <div key={tech} className={`flex items-center space-x-2 px-3 py-1.5 rounded-xl border border-white/10 ${sessionMode === 'prep' ? 'bg-purple-500/10' : 'bg-cyan-500/10'} text-xs font-bold`}>
-                        <span className="text-white">{tech}</span>
-                        <button onClick={() => toggleTech(tech)} className="text-slate-400 hover:text-white transition-colors">×</button>
+                      <div key={tech} className={`flex items-center space-x-3 px-6 py-3 rounded-2xl border-2 border-${getModeColor()}-500/30 bg-${getModeColor()}-500/10 text-sm font-black text-white uppercase italic`}>
+                        <span>{tech}</span>
+                        <button onClick={() => toggleTech(tech)} className="text-slate-400 hover:text-white transition-colors ml-2">×</button>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-              
-              {/* RESTORED SUGGESTIONS DROPDOWN */}
-              {suggestions.length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-4 glass rounded-2xl overflow-hidden border border-white/10 z-50 shadow-2xl animate-in slide-in-from-top-2 duration-300">
-                  {suggestions.map((tech, i) => (
-                    <button 
-                      key={i} 
-                      onClick={() => toggleTech(tech)} 
-                      className="w-full text-left px-8 py-4 hover:bg-white/10 transition-colors flex items-center justify-between group"
-                    >
-                      <span className="text-slate-200 font-bold">{tech}</span>
-                      <span className="text-cyan-400 text-[10px] font-black uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">Select Tech</span>
-                    </button>
-                  ))}
+
+              {/* Enhanced Search Suggestions */}
+              {hasSearched && (
+                <div className="absolute top-full left-0 right-0 mt-4 glass rounded-[35px] overflow-hidden z-50 shadow-[0_30px_60px_-12px_rgba(0,0,0,0.5)] border border-white/10 animate-in slide-in-from-top-4 duration-300">
+                  {suggestions.length > 0 ? (
+                    suggestions.map((tech, i) => (
+                      <button 
+                        key={i} 
+                        onClick={() => toggleTech(tech)} 
+                        className="w-full text-left px-10 py-6 hover:bg-white/10 text-white font-black text-xl transition-all flex items-center justify-between group uppercase italic"
+                      >
+                        <span>{tech}</span>
+                        <span className={`text-${getModeColor()}-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs tracking-widest`}>Sync Intelligence</span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-10 py-8 text-slate-500 font-bold uppercase tracking-widest text-center">
+                      {isSearching ? 'Searching Neural Database...' : 'No relevant technology found'}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             {selectedTechs.length > 0 && (
-              <div className="animate-in zoom-in-95 duration-500 space-y-12">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
-                   <div 
-                    onClick={() => setSessionMode('prep')}
-                    className={`group p-8 glass rounded-[40px] cursor-pointer border-2 transition-all hover:scale-[1.02] ${sessionMode === 'prep' ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_30px_rgba(139,92,246,0.2)]' : 'border-white/5 opacity-50'}`}
-                  >
-                    <div className="text-5xl mb-4 group-hover:rotate-6 transition-transform">🎓</div>
-                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white tracking-tighter">Mentor Mode</h3>
-                    <p className="text-slate-400 text-xs leading-relaxed">Deep-dive learning. Mentorship focus for 40 milestones.</p>
-                  </div>
-                  <div 
-                    onClick={() => setSessionMode('interview')}
-                    className={`group p-8 glass rounded-[40px] cursor-pointer border-2 transition-all hover:scale-[1.02] ${sessionMode === 'interview' ? 'border-cyan-500 bg-cyan-500/10 shadow-[0_0_30px_rgba(6,182,212,0.2)]' : 'border-white/5 opacity-50'}`}
-                  >
-                    <div className="text-5xl mb-4 group-hover:scale-110 transition-transform">💀</div>
-                    <h3 className="text-2xl font-black mb-2 uppercase italic text-white tracking-tighter">Panel Mode</h3>
-                    <p className="text-slate-400 text-xs leading-relaxed">Pure assessment. No help. Test your limits.</p>
-                  </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8 animate-in zoom-in-95 duration-500 max-w-6xl mx-auto">
+                {/* NEW COURSE MODE CARD */}
+                <div 
+                  onClick={() => setSessionMode('course')} 
+                  className={`group relative p-10 glass rounded-[50px] cursor-pointer border-2 transition-all hover:scale-[1.05] hover:rotate-1 ${sessionMode === 'course' ? 'border-teal-500 bg-teal-500/10 shadow-[0_0_40px_rgba(20,184,166,0.2)]' : 'border-white/5 opacity-50'}`}
+                >
+                  <div className="text-6xl mb-6 group-hover:scale-110 transition-transform">🎓</div>
+                  <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Full Course</h3>
+                  <p className="text-slate-400 text-xs mt-3 leading-relaxed font-medium">10-Module structured learning path from scratch to expert mastery. Persistent progress.</p>
                 </div>
 
-                <div className="flex flex-col items-center space-y-4">
-                  <div className="flex flex-col md:flex-row items-center justify-center gap-4 w-full">
-                    <button 
-                      onClick={() => { clearAllData(); setView('session'); startLiveSession(false); }} 
-                      className={`px-12 py-7 rounded-3xl bg-white text-slate-900 font-black text-2xl hover:scale-105 active:scale-95 transition-all shadow-2xl`}
-                    >
-                      INITIALIZE
-                    </button>
-                    {(conversationHistory.length > 0 || questionCount > 0) && (
-                      <button 
-                        onClick={() => { setView('session'); startLiveSession(true); }} 
-                        className={`px-12 py-7 rounded-3xl bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-600 to-pink-600' : 'from-cyan-600 to-blue-600'} text-white font-black text-2xl shadow-2xl hover:scale-105 active:scale-95 transition-all`}
-                      >
-                        RECONNECT (Q{questionCount}/40)
-                      </button>
-                    )}
-                  </div>
+                <div 
+                  onClick={() => setSessionMode('study')} 
+                  className={`group relative p-10 glass rounded-[50px] cursor-pointer border-2 transition-all hover:scale-[1.05] hover:-rotate-1 ${sessionMode === 'study' ? 'border-emerald-500 bg-emerald-500/10 shadow-[0_0_40px_rgba(16,185,129,0.2)]' : 'border-white/5 opacity-50'}`}
+                >
+                  <div className="text-6xl mb-6 group-hover:rotate-12 transition-transform">📖</div>
+                  <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Study Mode</h3>
+                  <p className="text-slate-400 text-xs mt-3 leading-relaxed font-medium">Grandmaster Teaching. Clear all doubts. Pure deep-dive knowledge without testing.</p>
                 </div>
+
+                <div 
+                  onClick={() => setSessionMode('prep')} 
+                  className={`group relative p-10 glass rounded-[50px] cursor-pointer border-2 transition-all hover:scale-[1.05] hover:rotate-1 ${sessionMode === 'prep' ? 'border-purple-500 bg-purple-500/10 shadow-[0_0_40px_rgba(139,92,246,0.2)]' : 'border-white/5 opacity-50'}`}
+                >
+                  <div className="text-6xl mb-6 group-hover:-rotate-6 transition-transform">🛠️</div>
+                  <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Mentor Mode</h3>
+                  <p className="text-slate-400 text-xs mt-3 leading-relaxed font-medium">Rigor Focus. 40 Milestone challenges with instant feedback and correction.</p>
+                </div>
+
+                <div 
+                  onClick={() => setSessionMode('interview')} 
+                  className={`group relative p-10 glass rounded-[50px] cursor-pointer border-2 transition-all hover:scale-[1.05] hover:-rotate-1 ${sessionMode === 'interview' ? 'border-cyan-500 bg-cyan-500/10 shadow-[0_0_40px_rgba(6,182,212,0.2)]' : 'border-white/5 opacity-50'}`}
+                >
+                  <div className="text-6xl mb-6 group-hover:scale-95 transition-transform">💀</div>
+                  <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Panel Mode</h3>
+                  <p className="text-slate-400 text-xs mt-3 leading-relaxed font-medium">High Stakes. Cold assessment interview simulation. Strictly evaluation only.</p>
+                </div>
+              </div>
+            )}
+
+            {selectedTechs.length > 0 && (
+              <div className="flex justify-center pt-10">
+                 <button 
+                  onClick={() => { setView('session'); startLiveSession(false); }} 
+                  className="group relative px-24 py-10 rounded-[50px] bg-white text-slate-900 font-black text-4xl shadow-[0_0_60px_rgba(255,255,255,0.2)] hover:scale-110 active:scale-95 transition-all uppercase italic tracking-tighter overflow-hidden"
+                >
+                  <span className="relative z-10">INITIALIZE {sessionMode}</span>
+                  <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
+                </button>
               </div>
             )}
           </div>
         )}
 
         {view === 'session' && (
-          <div className="h-full flex flex-col items-center justify-center max-w-4xl mx-auto space-y-12 animate-in zoom-in-95 duration-500 relative">
-            <div className={`absolute top-0 left-0 scanner ${sessionMode === 'prep' ? 'bg-purple-500' : 'bg-cyan-500'}`}></div>
+          <div className="h-full flex flex-col items-center justify-center max-w-5xl mx-auto space-y-16 animate-in zoom-in-95 duration-500 relative">
+            <div className={`absolute top-0 left-0 scanner bg-${getModeColor()}-500 shadow-[0_0_20px_rgba(255,255,255,0.5)]`}></div>
             
-            <div className="relative group">
-              <div className={`absolute -inset-24 bg-${sessionMode === 'prep' ? 'purple' : 'cyan'}-500/10 blur-[120px] rounded-full opacity-60 animate-pulse`} />
-              <div className={`relative w-80 h-80 rounded-[80px] border-4 ${sessionMode === 'prep' ? 'border-purple-500 shadow-[0_0_40px_rgba(139,92,246,0.3)]' : 'border-cyan-500 shadow-[0_0_40px_rgba(6,182,212,0.3)]'} flex items-center justify-center bg-slate-950 overflow-hidden`}>
-                <div className={`flex flex-col items-center transition-all duration-700 ${isLive ? 'scale-110' : 'scale-100'}`}>
-                  <span className="text-9xl mb-4 select-none">
-                    {avatarGender === 'male' ? '🤖' : '👩‍🚀'}
+            {/* Extended Status HUD */}
+            <div className="absolute top-0 left-0 right-0 flex justify-between items-start px-6 pt-2">
+              <div className={`flex flex-col space-y-2`}>
+                <div className={`flex items-center space-x-3 px-6 py-3 rounded-full glass border border-${getModeColor()}-500/40 shadow-lg`}>
+                  <div className={`w-3 h-3 rounded-full ${isLive ? 'bg-cyan-400 animate-pulse shadow-[0_0_15px_cyan]' : 'bg-red-500'}`} />
+                  <span className={`text-xs font-black uppercase tracking-[0.2em] ${isLive ? 'text-cyan-400' : 'text-red-500'}`}>
+                    {isLive ? '[ LINK STABLE ]' : '[ LINK BROKEN ]'}
                   </span>
+                </div>
+                {isLive && (
+                   <div className="px-6 py-2 glass rounded-full border border-white/5 inline-block">
+                     <span className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Neural Cache: SYNCED</span>
+                   </div>
+                )}
+              </div>
+              <div className="flex flex-col items-end space-y-2">
+                <div className="glass px-6 py-3 rounded-2xl border border-white/10 text-right">
+                  <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest block">Neural Pathway</span>
+                  <span className="text-sm text-white font-black uppercase italic">{selectedTechs[0]}</span>
                 </div>
               </div>
             </div>
 
-            <div className="text-center space-y-6 w-full max-w-lg">
-              <div className="space-y-2">
-                <div className="flex justify-between text-[10px] font-black uppercase tracking-[0.2em]">
-                  <span className={sessionMode === 'prep' ? 'text-purple-400' : 'text-cyan-400'}>STAGE {masteryStage} MILESTONE</span>
-                  <span className="text-slate-500">{questionCount} / 40 PROGRESS</span>
+            <div className="relative group">
+              <div className={`absolute -inset-32 bg-${getModeColor()}-500/10 blur-[150px] rounded-full animate-pulse transition-all duration-1000`} />
+              <div className={`relative w-96 h-96 rounded-[100px] border-4 border-${getModeColor()}-500 shadow-[0_0_60px_rgba(var(--color-rgb),0.3)] flex items-center justify-center bg-[#020617] overflow-hidden`}>
+                <div className={`transition-all duration-700 ${isLive ? 'scale-110' : 'scale-90 opacity-20 filter grayscale'}`}>
+                  <span className="text-[10rem] select-none filter drop-shadow-2xl">
+                    {sessionMode === 'course' ? '🎓' : sessionMode === 'study' ? '📖' : avatarGender === 'male' ? '🤖' : '👩‍🚀'}
+                  </span>
                 </div>
-                <div className="w-full h-3 bg-slate-900 rounded-full overflow-hidden border border-white/5 p-0.5">
-                  <div 
-                    className={`h-full rounded-full transition-all duration-1000 bg-gradient-to-r ${sessionMode === 'prep' ? 'from-purple-500 to-pink-500' : 'from-cyan-500 to-blue-500'}`} 
-                    style={{ width: `${(questionCount / 40) * 100}%` }} 
-                  />
-                </div>
+                {/* Reactive Waveform Overlay */}
+                {isLive && (
+                  <div className="absolute bottom-10 left-0 right-0 flex justify-center space-x-1 h-12">
+                    {[1,2,3,4,5,6].map(i => (
+                      <div key={i} className={`w-1.5 bg-${getModeColor()}-400 rounded-full animate-pulse`} style={{ height: `${20 + Math.random() * 80}%`, animationDelay: `${i * 0.1}s` }} />
+                    ))}
+                  </div>
+                )}
               </div>
-              <h2 className="text-2xl font-header font-black tracking-tight text-white uppercase italic">
-                {sessionMode === 'prep' ? 'MENTOR MODE' : 'PANEL MODE'}
+            </div>
+
+            <div className="text-center space-y-8 w-full max-w-xl">
+              {sessionMode === 'course' ? (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <div className="text-left">
+                      <span className="text-[10px] text-teal-400 font-black uppercase tracking-[0.3em] block mb-1">Module Progression</span>
+                      <span className="text-2xl font-header font-black text-white italic">0{courseProgress} <span className="text-xs text-slate-600">/ 10</span></span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-black tracking-widest uppercase">{Math.round((courseProgress / 10) * 100)}% Mastered</span>
+                  </div>
+                  <div className="w-full h-4 bg-slate-900 rounded-full border border-white/5 overflow-hidden p-1 shadow-inner">
+                    <div 
+                      className="h-full bg-gradient-to-r from-teal-500 to-emerald-400 rounded-full transition-all duration-1000 relative" 
+                      style={{ width: `${(courseProgress / 10) * 100}%` }} 
+                    >
+                      <div className="absolute inset-0 bg-white/20 animate-pulse"></div>
+                    </div>
+                  </div>
+                </div>
+              ) : sessionMode !== 'study' ? (
+                <div className="space-y-4">
+                  <div className="flex justify-between items-end">
+                    <div className="text-left">
+                      <span className="text-[10px] text-purple-400 font-black uppercase tracking-[0.3em] block mb-1">Rigor Milestones</span>
+                      <span className="text-2xl font-header font-black text-white italic">{questionCount} <span className="text-xs text-slate-600">/ 40</span></span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-black tracking-widest uppercase">{Math.round((questionCount / 40) * 100)}% Sync</span>
+                  </div>
+                  <div className="w-full h-4 bg-slate-900 rounded-full border border-white/5 overflow-hidden p-1 shadow-inner">
+                    <div 
+                      className="h-full bg-gradient-to-r from-purple-500 to-pink-500 rounded-full transition-all duration-1000" 
+                      style={{ width: `${(questionCount / 40) * 100}%` }} 
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="py-4 px-12 glass border-2 border-emerald-500/30 rounded-full inline-block shadow-2xl">
+                  <span className="text-emerald-400 font-black text-xs uppercase tracking-[0.6em] animate-pulse">Neural Knowledge Stream Active</span>
+                </div>
+              )}
+              <h2 className="text-4xl font-header font-black text-white italic tracking-tighter uppercase">
+                {sessionMode} PROTOCOL
               </h2>
             </div>
 
@@ -432,18 +530,19 @@ const App: React.FC = () => {
               {!isLive ? (
                 <button 
                   onClick={() => startLiveSession(true)} 
-                  className="px-24 py-9 rounded-[40px] bg-white text-slate-950 font-black text-4xl shadow-2xl hover:scale-105 transition-all uppercase italic tracking-tighter"
+                  className="px-28 py-10 rounded-[50px] bg-white text-slate-950 font-black text-4xl shadow-2xl hover:scale-110 active:scale-95 transition-all uppercase italic tracking-tighter"
                 >
-                  START SESSION
+                  RE-CONNECT NEURAL LINK
                 </button>
               ) : (
-                <div className="flex flex-col items-center space-y-6 w-full">
+                <div className="flex flex-col items-center space-y-6">
                   <button 
                     onClick={stopSession} 
-                    className="px-20 py-8 rounded-[35px] bg-red-600 text-white font-black text-3xl shadow-red-500/40 shadow-2xl hover:bg-red-700 transition-all hover:scale-105 active:scale-95 uppercase"
+                    className="px-24 py-10 rounded-[50px] bg-red-600 text-white font-black text-4xl shadow-[0_0_40px_rgba(220,38,38,0.4)] hover:bg-red-700 hover:scale-105 active:scale-95 transition-all uppercase italic tracking-tighter"
                   >
-                    DISCONNECT
+                    DISCONNECT LINK
                   </button>
+                  <p className="text-[10px] text-slate-600 font-bold tracking-[0.5em] uppercase animate-pulse">Knowledge Syncing In Progress...</p>
                 </div>
               )}
             </div>
@@ -451,34 +550,59 @@ const App: React.FC = () => {
         )}
 
         {view === 'feedback' && (
-          <div className="max-w-4xl mx-auto space-y-12 py-12 animate-in slide-in-from-bottom-12 duration-1000">
-             <div className="text-center space-y-4">
-                <div className={`inline-block px-8 py-3 rounded-full ${sessionMode === 'prep' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' : 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'} text-[10px] font-black tracking-widest border uppercase italic`}>Protocol Summary</div>
-                <h2 className="text-7xl font-header font-black text-white italic tracking-tighter">DATA LOGGED</h2>
+          <div className="max-w-5xl mx-auto space-y-16 py-16 animate-in slide-in-from-bottom-12 duration-1000">
+             <div className="text-center space-y-6">
+                <div className={`inline-block px-10 py-4 rounded-full bg-${getModeColor()}-500/10 text-${getModeColor()}-400 border-${getModeColor()}-500/20 text-xs font-black tracking-[0.4em] border-2 uppercase italic shadow-2xl`}>Sync Transmission Summary</div>
+                <h2 className="text-8xl font-header font-black text-white italic tracking-tighter uppercase">KNOWLEDGE CACHED</h2>
              </div>
 
-             <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                <div className={`glass p-12 rounded-[50px] text-center border-b-8 ${sessionMode === 'prep' ? 'border-purple-500' : 'border-cyan-500'} transition-transform hover:scale-105`}>
-                  <div className="text-7xl font-header font-black mb-3 text-white">{questionCount}</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Milestones</div>
+             <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+                <div className={`glass p-16 rounded-[60px] text-center border-b-[12px] border-${getModeColor()}-500 transition-all hover:scale-110 hover:-rotate-1`}>
+                  <div className="text-8xl font-header font-black mb-4 text-white">
+                    {sessionMode === 'course' ? courseProgress : (sessionMode === 'study' ? '∞' : questionCount)}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-black tracking-widest uppercase">
+                    {sessionMode === 'course' ? 'Modules Completed' : 'Rigor Milestones'}
+                  </div>
                 </div>
-                <div className="glass p-12 rounded-[50px] text-center border-b-8 border-red-500 transition-transform hover:scale-105">
-                  <div className="text-7xl font-header font-black mb-3 text-white">{mistakeLog.length}</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Topics to Review</div>
+                <div className="glass p-16 rounded-[60px] text-center border-b-[12px] border-red-500 transition-all hover:scale-110 hover:rotate-1">
+                  <div className="text-8xl font-header font-black mb-4 text-white">{mistakeLog.length}</div>
+                  <div className="text-[10px] text-slate-500 font-black tracking-widest uppercase">Topics to Review</div>
                 </div>
-                <div className={`glass p-12 rounded-[50px] text-center border-b-8 ${sessionMode === 'prep' ? 'border-pink-500' : 'border-blue-500'} transition-transform hover:scale-105`}>
-                  <div className="text-7xl font-header font-black mb-3 text-white">{masteryStage}</div>
-                  <div className="text-[10px] text-slate-500 font-bold tracking-widest uppercase">Stage Rank</div>
+                <div className={`glass p-16 rounded-[60px] text-center border-b-[12px] border-white transition-all hover:scale-110 hover:-rotate-1`}>
+                  <div className="text-8xl font-header font-black mb-4 text-white">{masteryStage}</div>
+                  <div className="text-[10px] text-slate-500 font-black tracking-widest uppercase">Neural Stage Rank</div>
                 </div>
              </div>
 
-             <button onClick={() => { setView('dashboard'); setSearchTerm(''); }} className="w-full py-10 rounded-[40px] bg-white text-slate-950 font-black text-3xl hover:bg-slate-200 transition-all shadow-2xl active:scale-95 uppercase italic tracking-tighter">BACK TO DASHBOARD</button>
+             <div className="glass p-12 rounded-[60px] border border-white/5 space-y-8 shadow-2xl">
+                <div className="flex justify-between items-center">
+                  <h4 className="text-xs font-black text-slate-500 uppercase tracking-[0.4em]">Active Knowledge Gaps</h4>
+                  <div className={`px-4 py-2 rounded-full bg-${getModeColor()}-500/10 border border-${getModeColor()}-500/30 text-[9px] font-black text-${getModeColor()}-400 tracking-widest uppercase`}>Cached Memory</div>
+                </div>
+                <div className="flex flex-wrap gap-4">
+                  {selectedTechs.map(t => (
+                    <span key={t} className="px-6 py-3 rounded-2xl bg-white/5 border border-white/10 text-sm font-black text-white uppercase italic tracking-tight">{t}</span>
+                  ))}
+                  {mistakeLog.length === 0 && <span className="text-slate-700 font-bold uppercase tracking-widest italic">No gaps detected. Excellent performance.</span>}
+                  {mistakeLog.slice(-5).map((m, i) => (
+                    <span key={i} className="px-6 py-3 rounded-2xl bg-red-500/10 border border-red-500/30 text-sm font-black text-red-400 uppercase italic tracking-tight">{m}</span>
+                  ))}
+                </div>
+             </div>
+
+             <button 
+              onClick={() => { setView('dashboard'); setSearchTerm(''); }} 
+              className="w-full py-12 rounded-[60px] bg-white text-slate-950 font-black text-4xl hover:bg-slate-200 active:scale-95 transition-all shadow-[0_20px_50px_rgba(0,0,0,0.5)] uppercase italic tracking-tighter"
+             >
+                RETURN TO NEURAL HUB
+             </button>
           </div>
         )}
       </main>
 
-      <footer className="p-10 text-center text-slate-700 text-[10px] tracking-[0.8em] font-mono uppercase opacity-30">
-        FuturePrep // Rigor: ${masteryStage} // Drive: Mental_v5.0
+      <footer className="p-12 text-center text-slate-900 text-[10px] tracking-[1.2em] font-mono uppercase opacity-40">
+        FuturePrep AI // RIGOR: v7.5 // CACHE: {isLive ? 'ACTIVE' : 'READY'} // PROTOCOL: {sessionMode.toUpperCase()}
       </footer>
     </div>
   );

@@ -3,11 +3,11 @@ import { GoogleGenAI, Type } from "@google/genai";
 import { SessionResult } from "../types.ts";
 
 export const searchTechnologies = async (query: string): Promise<string[]> => {
-  if (!query || query.length < 2) return [];
+  if (!query || query.trim().length < 2) return [];
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
     model: 'gemini-3-flash-preview',
-    contents: `List 5 popular or relevant technology names for career interviews that start with or match: "${query}". Return only a JSON array of strings.`,
+    contents: `List 6 accurate technology, software, or career skill names that start with or are highly relevant to: "${query}". Include both the exact matches and common related platforms. Return only a JSON array of strings. Examples: if user types "VMW", return ["VMware vSphere", "VMware Workstation", "Virtualization", "Cloud Computing"].`,
     config: {
       responseMimeType: "application/json",
       responseSchema: {
@@ -17,7 +17,8 @@ export const searchTechnologies = async (query: string): Promise<string[]> => {
     }
   });
   try {
-    return JSON.parse(response.text || '[]');
+    const text = response.text || '[]';
+    return JSON.parse(text);
   } catch {
     return [];
   }
@@ -51,5 +52,6 @@ export const generateSessionFeedback = async (history: string[]): Promise<Sessio
       }
     }
   });
-  return JSON.parse(response.text || '{}');
+  const text = response.text || '{}';
+  return JSON.parse(text);
 };
